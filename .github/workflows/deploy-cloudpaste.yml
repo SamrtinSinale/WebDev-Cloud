@@ -1,0 +1,68 @@
+name: Deploy CloudPaste (Cloudflare Workers)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - ".github/workflows/deploy-cloudpaste.yml"
+
+concurrency:
+  group: deploy-cloudpaste
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install --no-audit --no-fund
+          VITE_APP_ENV=production VITE_ENABLE_DEVTOOLS=false npm run build
+          test -f dist/index.html
+          du -sh dist
+
+      - name: Install backend deps
+        working-directory: backend
+        run: npm install --no-optional --no-audit --no-fund
+
+      - name: Resolve D1 database id
+        id: d1
+        working-directory: backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          DB_ID=$(npx wrangler d1 list --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const a=Array.isArray(j)?j:(j.result||[]);const d=a.find(x=>x.name==="cloudpaste-db");process.stdout.write(d?(d.uuid||""):"")}catch(e){}})')
+          echo "cloudpaste-db = $DB_ID"
+          test -n "$DB_ID"
+          echo "db_id=$DB_ID" >> $GITHUB_OUTPUT
+
+      - name: Patch wrangler.spa.toml
+        working-directory: backend
+        env:
+          ENCRYPTION_SECRET: ${{ secrets.ENCRYPTION_SECRET }}
+        run: |
+          DB_ID="${{ steps.d1.outputs.db_id }}"
+          sed -i -E "s/(database_id = \")[^\"]+(\")/\1${DB_ID}\2/" wrangler.spa.toml
+          if [ -n "$ENCRYPTION_SECRET" ]; then
+            sed -i -E "s|^ENCRYPTION_SECRET = \".*\"|ENCRYPTION_SECRET = \"${ENCRYPTION_SECRET}\"|" wrangler.spa.toml
+          fi
+          echo "database_id / ENCRYPTION_SECRET 已注入（密钥不回显）"
+          grep -c "database_id = \"${DB_ID}\"" wrangler.spa.toml
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --config wrangler.spa.toml
