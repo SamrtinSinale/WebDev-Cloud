@@ -108,31 +108,23 @@ export async function handleGet(c, path, userId, userType, db) {
     try {
       fileInfo = await fileSystem.getFileInfo(path, userId, userType);
     } catch (error) {
-      // RFC 4918 / RFC 7231: 对集合（目录）发起 GET/HEAD 应返回 405，
-      // 而不是 404。部分客户端（如 dyyds、Swift Backup）会先 GET 路径探测，
-      // 拿到 404 会误判为"服务器联系失败"。
-      try {
-        const dirInfo = await fileSystem.getFileInfo(
-          path.endsWith("/") ? path : path + "/",
-          userId,
-          userType
-        );
-        if (dirInfo && dirInfo.isDirectory) {
-          return new Response("Method Not Allowed: GET on a collection", {
-            status: 405,
-            headers: {
-              Allow: "OPTIONS, PROPFIND, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK, PROPPATCH",
-              "Content-Type": "text/plain; charset=utf-8",
-            },
-          });
-        }
-      } catch (_) {
-        // 目录探测也失败，按原逻辑处理
-      }
       if (error.status === 404) {
         return createWebDAVErrorResponse("文件不存在", 404);
       }
       throw error;
+    }
+
+    // RFC 7231 §4.3.1: GET/HEAD 作用于集合（目录）时应返回 405 并带 Allow 头，
+    // 而不是让请求继续下沉到存储驱动（Telegram 驱动会抛 ValidationError
+    // "不能下载目录"，被兜底映射成 500）。部分客户端会先 GET 路径做探测。
+    if (fileInfo && fileInfo.isDirectory) {
+      return new Response("Method Not Allowed: GET on a collection", {
+        status: 405,
+        headers: {
+          Allow: "OPTIONS, PROPFIND, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK, PROPPATCH",
+          "Content-Type": "text/plain; charset=utf-8",
+        },
+      });
     }
 
     // 从文件信息中提取元数据
