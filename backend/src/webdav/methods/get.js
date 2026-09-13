@@ -108,6 +108,27 @@ export async function handleGet(c, path, userId, userType, db) {
     try {
       fileInfo = await fileSystem.getFileInfo(path, userId, userType);
     } catch (error) {
+      // RFC 4918 / RFC 7231: 对集合（目录）发起 GET/HEAD 应返回 405，
+      // 而不是 404。部分客户端（如 dyyds、Swift Backup）会先 GET 路径探测，
+      // 拿到 404 会误判为"服务器联系失败"。
+      try {
+        const dirInfo = await fileSystem.getFileInfo(
+          path.endsWith("/") ? path : path + "/",
+          userId,
+          userType
+        );
+        if (dirInfo && dirInfo.isDirectory) {
+          return new Response("Method Not Allowed: GET on a collection", {
+            status: 405,
+            headers: {
+              Allow: "OPTIONS, PROPFIND, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK, PROPPATCH",
+              "Content-Type": "text/plain; charset=utf-8",
+            },
+          });
+        }
+      } catch (_) {
+        // 目录探测也失败，按原逻辑处理
+      }
       if (error.status === 404) {
         return createWebDAVErrorResponse("文件不存在", 404);
       }

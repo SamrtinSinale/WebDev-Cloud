@@ -723,8 +723,23 @@ async function handleStoragePropfind(fileSystem, path, requestInfo, userIdOrInfo
       }
     } else if (requestInfo.depth === "1") {
       // 获取当前资源和直接子项
+      // RFC 4918: Depth:1 作用于非集合资源时，行为等同于 Depth:0
       try {
-        result = await fileSystem.listDirectory(path, userIdOrInfo, actualUserType);
+        const info = await fileSystem.getFileInfo(path, userIdOrInfo, actualUserType);
+        if (info && info.isDirectory === false) {
+          // 目标是文件 —— 降级为 depth=0，避免 listDirectory 抛错导致 500
+          result = {
+            path: path,
+            isDirectory: false,
+            name: info.name,
+            size: info.size,
+            modified: info.modified,
+            created: info.created,
+            items: [],
+          };
+        } else {
+          result = await fileSystem.listDirectory(path, userIdOrInfo, actualUserType);
+        }
       } catch (error) {
         throw error;
       }
